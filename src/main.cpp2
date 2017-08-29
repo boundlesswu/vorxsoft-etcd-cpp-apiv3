@@ -1,0 +1,240 @@
+#include <iostream>
+#include <memory>
+#include <string>
+#include <exception>
+#include <stdexcept> 
+
+#include <grpc++/grpc++.h>
+
+//#include "catch.hpp"
+
+//#include "etcd/Client.hpp"
+//#include "etcd/Watcher.hpp"
+//#include "etcd/SyncClient.hpp"
+#include "VorxService.h"
+
+using namespace std;
+using namespace Vorx;
+//using grpc::Channel;
+//using grpc::ClientContext;
+//using grpc::Status;
+//using grpc::ChannelArguments;
+//using grpc::ChannelInterface;
+
+//using etcdserverpb::KV;
+//using etcdserverpb::Watch;
+//using etcdserverpb::Lease;
+//using etcdserverpb::Maintenance;
+//using etcdserverpb::Auth;
+
+
+//#pragma comment(lib, "casablanca120.lib") 
+
+static std::string etcd_uri("http://192.168.20.251:2379");
+static int watcher_called = 0;
+bool deleted = false;
+
+class watch4changes {
+public:
+	watch4changes(std::string url, std::string key) {
+		petcd_ = new etcd::Client(url);
+		key_ = key;
+		index_ = 0;
+	}
+	~watch4changes() {
+		delete petcd_;
+	}
+	void watch_for_changes()
+	{
+		petcd_->watch(key_,  true).then([this](pplx::task<etcd::Response> resp_task)
+		{
+			try
+			{
+				etcd::Response resp = resp_task.get();
+				index_ = resp.index();
+				std::cout << resp.action() << " " << resp.value().as_string() << std::endl;
+			}
+			catch (...) {}
+			watch_for_changes();
+		});
+	}
+private:
+	etcd::Client* petcd_;
+	int index_;
+	std::string key_;
+
+};
+void printResponse(etcd::Response const & resp)
+{
+	++watcher_called;
+	std::cout << "print response called" << std::endl;
+	if (resp.error_code())
+		std::cout << resp.error_code() << ": " << resp.error_message() << std::endl;
+	else
+	{
+		std::cout << resp.action() << " " <<resp.value().as_string() << std::endl;
+		std::cout << "Previous value: " << resp.prev_value().as_string() << std::endl;
+		if (resp.action() == "delete") {
+			deleted = true;
+		}
+	}
+	return;
+}
+//#define WATCHERTEST
+///#define BASETEST
+const std::string service_key("/service/test");
+int main() {
+	etcd::Client etcd(etcd_uri);
+#ifdef BASETEST
+	etcd::Client etcd("http://192.168.20.251:2379");
+    //etcd::Response response = etcd.get("/service/ims/192.168.1.100:8133/").get();
+	etcd::Response resp = etcd.ls("/service/ims/").get();
+	for (int i = 0; i < resp.keys().size(); i++)
+	{
+		std::cout << "NO"<<i+1<<" key:"<< "\""<< resp.keys()[i]<<"\""<<" value";
+		std::cout << " = " << resp.value(i).as_string() << std::endl;
+	}
+#endif
+#ifdef WATCHERTEST
+	
+	pplx::task<etcd::Response> response_task = etcd.set("/test/key1", "42");
+
+	try
+	{
+		etcd::Response response = response_task.get();
+		if (response.is_ok())
+			std::cout << "The new value is successfully set, previous value was "
+			<< response.prev_value().as_string();
+		else
+			std::cout << "operation failed, details: " << response.error_message();
+	}
+	//catch (std::ecxeption const & ex)
+	catch (...)
+	{
+        //std::cerr << "communication problem, details: " << errc.what();
+		//std::cerr << "communication problem, details: " << ex.what();
+	}
+#endif
+#if 0
+	etcd.set("/test/key1", "value1").wait();
+	etcd.set("/test/key2", "value2").wait();
+	etcd.set("/test/key3", "value3").wait();
+	etcd.set("/test/subdir/foo", "foo").wait();
+
+
+
+	//etcd::Watcher* pwatch = new etcd::Watcher(etcd_uri, "/test", printResponse);
+	//etcd.set("/test/key", "42").wait(); /* print response will be called */
+	//etcd.set("/test/key", "43").wait(); /* print response will be called */
+	
+	//delete pwatch;
+	//etcd.set("/test/key", "43"); /* print response will NOT be called, since watch is already cancelled */
+	//pwatch->Cancel();
+#endif
+	 /*
+	etcd.set(etcd_uri, "42").wait();
+
+	pplx::task<etcd::Response> res = etcd.watch(service_key,true);
+	if (!res.is_done()) {
+		std::cout << "!res.is_done()" << endl;
+	}*/
+	//etcd::Watcher* pwatch = new etcd::Watcher(etcd_uri, service_key, printResponse);
+	//pplx::task<etcd::Response> res = etcd.set(service_key, "dddddfd", 111111);
+
+	google::protobuf::int64 myttl = 200;
+	etcd::Response const & resp = etcd.leasegrant(myttl).get();
+
+	if (resp.is_ok())
+	{
+		std::cout << "lease id is " << resp.value().lease() << "     ttl is " << resp.value().ttl() << endl;
+	}
+	else
+	{
+		std::cout << resp.error_code() << " " << resp.error_message() <<std::endl;	
+	}
+	google::protobuf::int64 lease_id = resp.value().lease();
+	google::protobuf::int64 ttl = resp.value().ttl();
+
+	
+	srand((unsigned)time(NULL));
+	//std::string aaa = service_key + "/192.168.1.100:" + std::to_string(rand() % 65536);
+	std::string aaa = service_key + "/192.168.1.100" ;
+	time_t ctime = time(&ctime);
+    std::string myvalue = std::to_string(ctime);
+    etcd::Response const & resp_set = etcd.set(aaa, myvalue, lease_id).get();
+	if (resp_set.is_ok())
+	{
+		std::cout << "lease id is " << resp_set.value().lease() << "   ttl is " << resp_set.value().ttl() << endl;
+	}
+	else
+	{
+		std::cout << resp_set.error_code() << " " << resp_set.error_message() << std::endl;
+	}
+	
+	std::cout << "current time is " << ctime << endl;
+	etcd::Watcher* pwatcher = new etcd::Watcher(etcd_uri, aaa, printResponse);
+	/*
+	etcd::Response const & res_watcher = etcd.watch(aaa, true).get();
+	if (res_watcher.is_ok())
+	{
+		std::cout << "key " << aaa << "   set watcher ok! " << endl;
+		std::cout << "event is " << res_watcher.value().
+	    std::cout << resp2.error_code() << " " << resp2.error_message() << std::endl;
+	}
+	else
+	{
+		std::cout << res_watcher.error_code() << " " << res_watcher.error_message() << std::endl;
+	}
+	
+	while (1) {	
+		//keep alive
+		etcd::Response const  res_heatbeart = etcd.leasekeepalive(lease_id).get();
+		if (res_heatbeart.is_ok())
+		{
+			std::cout << "lease id is " << res_heatbeart.value().lease() << "     ttl is " << res_heatbeart.value().ttl() << endl;
+		}
+		else
+		{
+			std::cout << res_heatbeart.error_code() << " " << res_heatbeart.error_message() << std::endl;
+
+		}
+		etcd::Response resp5 = etcd.ls(service_key).get();
+		for (int i = 0; i < resp5.keys().size(); i++)
+		{
+			std::cout << "NO" << i + 1 << " key:" << "\"" << resp5.keys()[i] << "\"" << " value";
+			std::cout << " = " << resp5.value(i).as_string() << std::endl;
+		}
+		//ttl
+		Sleep((myttl-1)*1000);
+
+		ctime = time(&ctime);
+		myvalue = std::to_string(ctime);
+		etcd::Response const & resp22 = etcd.set(aaa, myvalue, lease_id).get();
+		if (resp22.is_ok())
+		{
+			std::cout << "lease id is " << resp22.value().lease() << "     ttl is " << resp22.value().ttl() << endl;
+			//std::cout << resp2.error_code() << " " << resp2.error_message() << std::endl;
+		}
+		else
+		{
+			std::cout << resp22.error_code() << " " << resp22.error_message() << std::endl;
+		}
+	}
+	*/
+	//pwatch->Cancel();
+	time_t ctime2 = time(&ctime2);
+
+	
+	std::cout << "spend time is " << ctime2 - ctime << endl;
+	do {
+		if (deleted) {
+			
+			break;
+		}
+	} while (1);
+	delete pwatcher;
+	//mywatch.Cancel();
+	return 0;
+}
+
+
